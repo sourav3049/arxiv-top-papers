@@ -19,71 +19,130 @@ import feedparser
 import streamlit as st
 
 APP_TITLE = "arXiv Top Papers Finder — RL & NLP"
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"
 OPENALEX_API = "https://api.openalex.org/works"
+HTTP_HEADERS = {
+    "User-Agent": "arxiv-top-papers/1.0 (+sourav3049@gmail.com)"
+}
+
+CONF_ALIASES = {
+    "NeurIPS": ["neurips", "nips"],
+    "ICLR": ["iclr"],
+    "ICML": ["icml"],
+    "CVPR": ["cvpr"],
+    "ICCV": ["iccv"],
+    "ECCV": ["eccv"],
+    "ACL": ["acl"],
+    "EMNLP": ["emnlp"],
+    "NAACL": ["naacl"],
+    "COLING": ["coling"],
+    "AAAI": ["aaai"],
+    "IJCAI": ["ijcai"],
+    "KDD": ["kdd"],
+    "SIGIR": ["sigir"],
+}
 
 # -------------------------------
 # Helpers
 # -------------------------------
+def matches_conference(paper: dict, selected: list[str]) -> bool:
+    """Return True if paper matches any selected conference by:
+       - OpenAlex host_venue (if present)
+       - arXiv comments
+       - title/summary
+    """
+    if not selected:
+        return True  # no filtering
+
+    hay = " ".join([
+        (paper.get("venue") or ""),                # from OpenAlex enrichment
+        (paper.get("arxiv_comment") or ""),
+        (paper.get("title") or ""),
+        (paper.get("summary") or ""),
+    ]).casefold()
+
+    for conf in selected:
+        for alias in CONF_ALIASES.get(conf, []):
+            if alias in hay:
+                return True
+    return False
 
 def _now_utc():
     return datetime.now(timezone.utc)
 
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def fetch_arxiv(query: str, categories: list[str], start: int, max_results: int, sort_by: str = "submittedDate"):
+    """
+    Returns a list of paper dicts from arXiv. Uses HTTPS + User-Agent.
+    Also returns a debug dict for UI diagnostics.
+    """
     # Build arXiv query string
-    # We combine:
-    #   (all:query) AND (cat:cat1 OR cat:cat2 ...)
     terms = []
     if query:
-        # arXiv expects spaces as "+", colon separated field qualifiers
-        # We'll use 'all:' to search everywhere
-        q = query.replace(" ", "+")
-        terms.append(f"all:{q}")
+        # Let requests encode spaces; arXiv accepts '+' or encoded spaces
+        terms.append(f"all:{query}")
     if categories:
-        cat_clause = "+OR+".join([f"cat:{c}" for c in categories])
+        # (cat:cs.CL OR cat:cs.AI ...)
+        cat_clause = " OR ".join([f"cat:{c}" for c in categories])
         terms.append(f"({cat_clause})")
 
-    search_query = "+AND+".join(terms) if terms else "all:machine+learning"
+    # If nothing specified, default to broad ML
+    search_query = " AND ".join(terms) if terms else "all:machine learning"
 
     params = {
         "search_query": search_query,
         "start": start,
         "max_results": max_results,
-        "sortBy": sort_by,           # submittedDate | lastUpdatedDate | relevance
+        "sortBy": sort_by,            # submittedDate | lastUpdatedDate | relevance
         "sortOrder": "descending",
     }
-    resp = requests.get(ARXIV_API, params=params, timeout=30)
-    resp.raise_for_status()
+
+    debug = {"url": ARXIV_API, "params": params, "raw_count": 0}
+
+    try:
+        resp = requests.get(ARXIV_API, params=params, timeout=30, headers=HTTP_HEADERS)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        # Surface the error in UI
+        st.error(f"arXiv request failed: {e}")
+        return [], debug
+
     feed = feedparser.parse(resp.text)
+    if hasattr(feed, "bozo_exception") and feed.bozo:
+        st.warning(f"Feed parse warning: {feed.bozo_exception}")
+    entries = feed.entries or []
+    debug["raw_count"] = len(entries)
 
     papers = []
-    for e in feed.entries:
-        # Prefer the PDF link
+    for e in entries:
         pdf_link = None
         alt_links = []
-        for l in e.links:
-            if l.rel == 'alternate':
+        for l in getattr(e, "links", []):
+            if getattr(l, "rel", "") == "alternate":
                 alt_links.append(l.href)
-            if l.type == 'application/pdf':
+            if getattr(l, "type", "") == "application/pdf":
                 pdf_link = l.href
-        link = pdf_link or (alt_links[0] if alt_links else e.link)
+        link = pdf_link or (alt_links[0] if alt_links else getattr(e, "link", None))
 
         # Extract arXiv id
-        arxiv_id = e.id.split('/abs/')[-1] if '/abs/' in e.id else e.id
+        eid = getattr(e, "id", "")
+        arxiv_id = eid.split("/abs/")[-1] if "/abs/" in eid else eid
 
         papers.append({
-            "title": e.title.strip(),
-            "authors": [a.name for a in getattr(e, 'authors', [])],
+            "title": getattr(e, "title", "").strip(),
+            "authors": [a.name for a in getattr(e, 'authors', [])] if hasattr(e, "authors") else [],
             "summary": getattr(e, 'summary', '').strip(),
             "published": getattr(e, 'published', ''),
             "updated": getattr(e, 'updated', ''),
-            "primary_category": getattr(e, 'arxiv_primary_category', {}).get('term', ''),
-            "categories": [t['term'] for t in getattr(e, 'tags', []) if 'term' in t],
+            "primary_category": getattr(getattr(e, 'arxiv_primary_category', {}), 'get', lambda k, d=None: d)('term', '') if hasattr(e, 'arxiv_primary_category') else '',
+            "categories": [t['term'] for t in getattr(e, 'tags', []) if isinstance(t, dict) and 'term' in t],
             "link": link,
             "arxiv_id": arxiv_id,
+            "arxiv_comment": getattr(e, "arxiv_comment", ""),
         })
-    return papers
+    return papers, debug
+
 
 @st.cache_data(show_spinner=False)
 def openalex_citations(title: str, first_author: str | None = None):
@@ -214,6 +273,16 @@ with st.sidebar:
     st.divider()
     use_openalex = st.toggle("Enrich with OpenAlex (citations)", value=True, help="Adds 1 API call per paper (rate limits may apply).")
     pause = st.slider("Pause between OpenAlex calls (seconds)", 0.0, 2.0, 0.2, 0.1)
+    
+    st.divider()
+    CONF_OPTIONS = [
+        "NeurIPS", "ICLR", "ICML", "CVPR", "ICCV", "ECCV",
+        "ACL", "EMNLP", "NAACL", "COLING",
+        "AAAI", "IJCAI", "KDD", "SIGIR"
+    ]
+    conf_filter = st.multiselect("Conference filter (optional)", options=CONF_OPTIONS, default=[])
+    match_year = st.toggle("Only show if a match is found (strict)", value=False,
+                        help="If ON, papers must match at least one selected conference via comments/venue/title.")
 
     st.divider()
     top_k = st.slider("Show top K", 5, 100, 20)
@@ -226,42 +295,48 @@ if run_search:
 
     with st.spinner("Querying arXiv…"):
         all_papers = []
+        debug_info = []
         for p in range(pages):
-            batch = fetch_arxiv(query=query, categories=categories, start=p * max_fetch, max_results=max_fetch)
+            batch, dbg = fetch_arxiv(query=query, categories=categories, start=p * max_fetch, max_results=max_fetch)
             all_papers.extend(batch)
+            debug_info.append(dbg)
             time.sleep(0.5)  # be kind to arXiv
 
-    # Filter by date window
+    # Diagnostics
+    #with st.expander("Debug: arXiv API calls"):
+    #    for i, d in enumerate(debug_info):
+    #        st.write(f"Page {i+1}: params={d['params']}")
+    #        st.write(f"Raw entries: {d['raw_count']}")
+
+    # Filter by date window (be lenient if dates are missing)
     filtered = []
+    dropped_old = 0
     for p in all_papers:
         dt = parse_date(p.get('updated') or p.get('published'))
-        if not dt or dt < lookback_cutoff:
+        if dt is None:
+            # keep items with missing dates instead of dropping silently
+            filtered.append(p)
             continue
-        filtered.append(p)
+        if dt >= lookback_cutoff:
+            filtered.append(p)
+        else:
+            dropped_old += 1
 
-    st.success(f"Fetched {len(all_papers)}; kept {len(filtered)} within the last {months} months.")
+    st.success(f"Fetched {len(all_papers)}; kept {len(filtered)} within the last {months} months (dropped {dropped_old} as too old).")
 
-    # Optional: enrich with OpenAlex citations
-    if use_openalex:
-        st.caption("Enriching with OpenAlex for citations…")
-        prog = st.progress(0.0, text="Looking up citations…")
-        enriched = []
-        for i, p in enumerate(filtered):
-            info = openalex_citations(p.get('title', ''), (p.get('authors') or [None])[0])
-            if info:
-                p.update({
-                    "citations": info.get('cited_by_count', 0),
-                    "openalex_id": info.get('openalex_id'),
-                    "doi": info.get('doi'),
-                    "oa_url": info.get('oa_url'),
-                    "venue": info.get('host_venue'),
-                })
-            else:
-                p.update({"citations": 0})
-            enriched.append(p)
-            prog.progress((i + 1) / max(1, len(filtered)))
-            time.sleep(pause)
-        filtered = enriched
+    if not filtered:
+        st.warning("No results after filtering. Try: reduce lookback months, remove some categories, or broaden keywords.")
+        st.stop()
+
+    # 📌 Conference filter
+    if conf_filter:
+        before = len(filtered)
+        filtered = [p for p in filtered if matches_conference(p, conf_filter)]
+        st.info(f"Conference filter kept {len(filtered)} of {before} papers.")
+
+    if match_year and not filtered:
+        st.warning("No papers matched the selected conferences. Try disabling Strict mode, broadening keywords, or increasing the lookback window.")
+        st.stop()
 
     # Scoring & sorting
     keywords = [k.strip() for k in query.split()] if query else []
@@ -271,11 +346,10 @@ if run_search:
 
     top = filtered[:top_k]
 
-    # Summary row
     st.subheader("Results")
     st.write(f"Showing **{len(top)}** of **{len(filtered)}** ranked papers.")
 
-    # Export CSV
+    # Export button
     if top:
         csv_bytes = to_csv([
             {
@@ -319,6 +393,7 @@ if run_search:
                 if p.get('doi'):
                     st.markdown(f"DOI: {p.get('doi')}")
                 st.code(p.get('arxiv_id') or "")
+
 
 else:
     st.info("Configure your query in the sidebar, then click **Search & Rank**.")
