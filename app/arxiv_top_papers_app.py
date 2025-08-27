@@ -17,30 +17,21 @@ from datetime import datetime, timedelta, timezone
 import requests
 import feedparser
 import streamlit as st
+import os
+import yaml
 
-APP_TITLE = "arXiv Top Papers Finder — RL & NLP"
-ARXIV_API = "https://export.arxiv.org/api/query"
-OPENALEX_API = "https://api.openalex.org/works"
-HTTP_HEADERS = {
-    "User-Agent": "arxiv-top-papers/1.0 (+sourav3049@gmail.com)"
-}
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # project root
+CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
 
-CONF_ALIASES = {
-    "NeurIPS": ["neurips", "nips"],
-    "ICLR": ["iclr"],
-    "ICML": ["icml"],
-    "CVPR": ["cvpr"],
-    "ICCV": ["iccv"],
-    "ECCV": ["eccv"],
-    "ACL": ["acl"],
-    "EMNLP": ["emnlp"],
-    "NAACL": ["naacl"],
-    "COLING": ["coling"],
-    "AAAI": ["aaai"],
-    "IJCAI": ["ijcai"],
-    "KDD": ["kdd"],
-    "SIGIR": ["sigir"],
-}
+# Load config
+with open(CONFIG_PATH , "r") as f:
+    cfg = yaml.safe_load(f)
+
+APP_TITLE = cfg["app"]["title"]
+ARXIV_API = cfg["app"]["arxiv_api"]
+OPENALEX_API = cfg["app"]["openalex_api"]
+HTTP_HEADERS = cfg["app"]["http_headers"]
+CONF_ALIASES = cfg["conferences"]
 
 # -------------------------------
 # Helpers
