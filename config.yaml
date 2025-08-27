@@ -1,0 +1,22 @@
+app:
+  title: "arXiv Top Papers Finder — RL & NLP"
+  arxiv_api: "https://export.arxiv.org/api/query"
+  openalex_api: "https://api.openalex.org/works"
+  http_headers:
+    User-Agent: "arxiv-top-papers/1.0 (+sourav3049@gmail.com)"
+
+conferences:
+  NeurIPS: ["neurips", "nips"]
+  ICLR: ["iclr"]
+  ICML: ["icml"]
+  CVPR: ["cvpr"]
+  ICCV: ["iccv"]
+  ECCV: ["eccv"]
+  ACL: ["acl"]
+  EMNLP: ["emnlp"]
+  NAACL: ["naacl"]
+  COLING: ["coling"]
+  AAAI: ["aaai"]
+  IJCAI: ["ijcai"]
+  KDD: ["kdd"]
+  SIGIR: ["sigir"]
